@@ -155,20 +155,44 @@ class RecomputeEngine:
     def verify_proof_package(
         self,
         proof_package: dict[str, Any],
+        confidence_tolerance: float = 1e-6,
     ) -> dict[str, Any]:
         """
         Quick verification: recompute and check if results match.
+
+        Validates:
+        1. proof_hash matches (deterministic recomputation)
+        2. expected_verdict matches recomputed verdict (plaintext consistency)
+        3. expected_confidence matches recomputed confidence within tolerance
 
         Returns a summary indicating whether the proof is valid.
         """
         result = self.recompute_from_proof(proof_package)
 
+        hash_matches = result.get("proof_matches", False)
+        expected_verdict = proof_package.get("expected_verdict")
+        expected_confidence = proof_package.get("expected_confidence")
+        recomputed_verdict = result["verdict"]
+        recomputed_confidence = result["confidence"]
+
+        # Guard against plaintext field tampering:
+        # valid requires hash match AND plaintext consistency
+        verdict_matches = (
+            expected_verdict is None or expected_verdict == recomputed_verdict
+        )
+        confidence_matches = (
+            expected_confidence is None
+            or abs(expected_confidence - recomputed_confidence) <= confidence_tolerance
+        )
+        valid = hash_matches and verdict_matches and confidence_matches
+
         return {
-            "valid": result.get("proof_matches", False),
-            "recomputed_verdict": result["verdict"],
-            "recomputed_confidence": result["confidence"],
+            "valid": valid,
+            "recomputed_verdict": recomputed_verdict,
+            "recomputed_confidence": recomputed_confidence,
             "recomputed_proof_hash": result["proof_hash"],
-            "expected_verdict": proof_package.get("expected_verdict"),
+            "expected_verdict": expected_verdict,
+            "expected_confidence": expected_confidence,
             "expected_proof_hash": proof_package.get("expected_proof_hash"),
             "dimensions": result["dimensions"],
         }
