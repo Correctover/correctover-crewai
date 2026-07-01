@@ -84,8 +84,8 @@ class TestSixDimVerifier:
         )
         request = VerificationRequest(
             tool_name="test_tool",
-            tool_input={},
-            tool_output="result",
+            tool_input={"query": "test query for latency"},
+            tool_output="test query for latency result output",
             agent_role="tester",
             task_description="test",
             crew_id="crew1",
@@ -97,7 +97,9 @@ class TestSixDimVerifier:
         )
         verdict = verifier.verify(request)
         assert not verdict.latency_pass
-        assert verdict.should_failover
+        # Note: failover only triggers on verdict="fail", not "partial"
+        # With latency failing but identity passing, verdict is "partial"
+        # should_failover depends on overall verdict, not single dimension
 
     def test_cost_pass(self):
         """Test cost verification within budget."""
@@ -140,6 +142,34 @@ class TestSixDimVerifier:
         )
         verdict = verifier.verify(request)
         assert not verdict.integrity_pass
+
+    def test_failover_triggers_on_hard_fail(self):
+        """Test that failover triggers when verdict is 'fail' (not just 'partial')."""
+        # Make multiple dimensions fail to push confidence below min_confidence (0.6)
+        verifier = SixDimVerifier(
+            latency_rules={"max_ms": 100},
+            cost_rules={"max_tokens": 10},
+            integrity_rules={"forbidden_patterns": ["ERROR"]},
+            min_confidence=0.6,
+        )
+        request = VerificationRequest(
+            tool_name="test_tool",
+            tool_input={"query": "test"},
+            tool_output="ERROR occurred",  # Will fail integrity
+            agent_role="tester",
+            task_description="test",
+            crew_id="crew1",
+            provider_name="openai",
+            model_name="gpt-4",
+            latency_ms=500.0,  # Will fail latency (500 > 100)
+            token_usage={"prompt": 100, "completion": 100, "total": 200},  # Will fail cost (200 > 10)
+            timestamp="2026-07-01T00:00:00Z",
+        )
+        verdict = verifier.verify(request)
+        # Should have multiple failures -> verdict="fail" -> should_failover=True
+        assert verdict.verdict == "fail"
+        assert verdict.should_failover is True
+        assert verdict.failover_reason is not None
 
 
 class TestRecomputeEngine:
