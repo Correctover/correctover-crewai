@@ -222,6 +222,103 @@ class TestRecomputeEngine:
         assert result["recomputed_proof_hash"] == original_verdict.proof_hash
         assert result["recomputed_verdict"] == original_verdict.verdict
 
+    def test_tampered_plaintext_verdict_is_rejected(self):
+        """A proof package whose plaintext expected_verdict has been edited independently
+        of expected_proof_hash must fail verification, even though the hash still matches.
+
+        Regression test for the gap found + fixed in a6ea74c: verify_proof_package used to
+        set `valid` purely from hash equality, so tampering only the human-readable
+        expected_verdict field (leaving expected_proof_hash untouched) produced valid=True
+        for a package claiming a better verdict than it actually recomputes to."""
+        verifier = SixDimVerifier(
+            latency_rules={"max_ms": 5000},
+            cost_rules={"max_tokens": 1000},
+        )
+        request = VerificationRequest(
+            tool_name="test_tool",
+            tool_input={"query": "test"},
+            tool_output="valid output",
+            agent_role="tester",
+            task_description="test task",
+            crew_id="crew1",
+            provider_name="openai",
+            model_name="gpt-4",
+            latency_ms=100.0,
+            token_usage={"prompt": 10, "completion": 20, "total": 30},
+            timestamp="2026-07-01T00:00:00Z",
+        )
+        original_verdict = verifier.verify(request)
+        rules = {
+            "structure": verifier.structure_rules,
+            "schema": verifier.schema_rules,
+            "latency": verifier.latency_rules,
+            "cost": verifier.cost_rules,
+            "identity": verifier.identity_rules,
+            "integrity": verifier.integrity_rules,
+        }
+        proof_package = RecomputeEngine.export_proof_package(
+            request=request, verdict=original_verdict, rules=rules,
+        )
+
+        # Tamper ONLY the plaintext claim — expected_proof_hash is untouched, so a hash-only
+        # check would still see a match.
+        tampered = dict(proof_package)
+        tampered["expected_verdict"] = "pass" if original_verdict.verdict != "pass" else "fail"
+
+        result = RecomputeEngine().verify_proof_package(tampered)
+
+        assert not result["valid"], (
+            "a tampered plaintext expected_verdict must not pass verification "
+            "even when expected_proof_hash still matches the recomputed hash"
+        )
+        # the hash itself is still internally consistent — only the plaintext claim lied
+        assert result["recomputed_proof_hash"] == original_verdict.proof_hash
+        assert result["recomputed_verdict"] == original_verdict.verdict
+        assert result["expected_verdict"] != result["recomputed_verdict"]
+
+    def test_tampered_plaintext_confidence_is_rejected(self):
+        """Same class of tamper as above, on expected_confidence instead of expected_verdict."""
+        verifier = SixDimVerifier(
+            latency_rules={"max_ms": 5000},
+            cost_rules={"max_tokens": 1000},
+        )
+        request = VerificationRequest(
+            tool_name="test_tool",
+            tool_input={"query": "test"},
+            tool_output="valid output",
+            agent_role="tester",
+            task_description="test task",
+            crew_id="crew1",
+            provider_name="openai",
+            model_name="gpt-4",
+            latency_ms=100.0,
+            token_usage={"prompt": 10, "completion": 20, "total": 30},
+            timestamp="2026-07-01T00:00:00Z",
+        )
+        original_verdict = verifier.verify(request)
+        rules = {
+            "structure": verifier.structure_rules,
+            "schema": verifier.schema_rules,
+            "latency": verifier.latency_rules,
+            "cost": verifier.cost_rules,
+            "identity": verifier.identity_rules,
+            "integrity": verifier.integrity_rules,
+        }
+        proof_package = RecomputeEngine.export_proof_package(
+            request=request, verdict=original_verdict, rules=rules,
+        )
+
+        tampered = dict(proof_package)
+        tampered["expected_confidence"] = min(1.0, original_verdict.confidence + 0.2)
+
+        result = RecomputeEngine().verify_proof_package(tampered)
+
+        assert not result["valid"], (
+            "a tampered plaintext expected_confidence must not pass verification "
+            "even when expected_proof_hash still matches the recomputed hash"
+        )
+        assert result["recomputed_proof_hash"] == original_verdict.proof_hash
+
 
 class TestCorrectoverCrewAIAdapter:
     """Test adapter integration."""
