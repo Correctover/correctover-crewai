@@ -1,5 +1,6 @@
 """Correctover CrewAI Adapter - Main adapter class."""
 
+import json
 import time
 from datetime import datetime
 from typing import Any
@@ -65,8 +66,8 @@ class CorrectoverCrewAIAdapter:
         self._verdicts: list[VerificationVerdict] = []
         self._proof_packages: list[dict] = []
 
-        # Context tracking for before/after hook correlation
-        self._pending_contexts: dict[str, dict] = {}
+        # Context tracking for before/after hook correlation (FIFO queue)
+        self._pending_contexts: list[dict] = []
 
     def register(self):
         """
@@ -98,17 +99,21 @@ class CorrectoverCrewAIAdapter:
         Returns:
             None to allow execution, False to block
         """
-        tool_call_id = self._generate_tool_call_id(context)
+        import hashlib
+        input_hash = hashlib.sha256(
+            json.dumps(context.tool_input, sort_keys=True).encode()
+        ).hexdigest()[:12]
 
-        # Capture full context for after_tool_call verification
-        self._pending_contexts[tool_call_id] = {
+        # Capture full context for after_tool_call verification (FIFO queue)
+        self._pending_contexts.append({
+            "match_key": f"{context.tool_name}:{input_hash}",
             "tool_name": context.tool_name,
             "tool_input": context.tool_input,
             "agent_role": getattr(context.agent, "role", None) if context.agent else None,
             "task_description": getattr(context.task, "description", None) if context.task else None,
             "crew_id": getattr(context.crew, "id", None) if context.crew else None,
             "start_time": time.time(),
-        }
+        })
 
         # Optional: fail-closed mode based on policy
         # For now, we allow all tool calls and verify after
@@ -121,10 +126,19 @@ class CorrectoverCrewAIAdapter:
         Args:
             context: CrewAI ToolCallHookContext
         """
-        tool_call_id = self._generate_tool_call_id(context)
+        import hashlib
+        input_hash = hashlib.sha256(
+            json.dumps(context.tool_input, sort_keys=True).encode()
+        ).hexdigest()[:12]
+        match_key = f"{context.tool_name}:{input_hash}"
 
-        # Retrieve captured context
-        call_context = self._pending_contexts.pop(tool_call_id, {})
+        # Find and remove the first matching pending context (FIFO)
+        call_context = None
+        for i, ctx in enumerate(self._pending_contexts):
+            if ctx["match_key"] == match_key:
+                call_context = self._pending_contexts.pop(i)
+                break
+
         if not call_context:
             return  # Context not found, skip verification
 
@@ -184,12 +198,6 @@ class CorrectoverCrewAIAdapter:
         This allows third parties to verify the correctness of our verdicts.
         """
         return self.recompute_engine.verify_proof_package(proof_package)
-
-    def _generate_tool_call_id(self, context) -> str:
-        """Generate unique ID for tool call correlation."""
-        import hashlib
-        raw = f"{context.tool_name}:{id(context)}:{time.time()}"
-        return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     def _extract_token_usage(self, context) -> dict:
         """Extract token usage from tool result."""
